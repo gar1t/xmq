@@ -1,0 +1,49 @@
+#!/usr/bin/env escript
+%% -*- erlang -*-
+
+-include_lib("amqp_client/include/amqp_client.hrl").
+
+usage() ->
+    io:format("usage: amqp-listen <bindings>~n"),
+    erlang:halt(1).
+
+main([]) -> usage();
+main(Bindings) ->
+    %% Connect to broker.
+    {ok, C} = amqp_connection:start(#amqp_params_network{}),
+
+    %% Create an exclusive queue for receiving messages.
+    {ok, Ch} = amqp_connection:open_channel(C),
+    QDecl = #'queue.declare'{auto_delete=true, exclusive=true},
+    #'queue.declare_ok'{queue=Q} = amqp_channel:call(Ch, QDecl),
+    
+    %% Bind topics to our queue.
+    bind(Ch, Q, Bindings),
+
+    %% Subscribe to our queue.
+    Sub = #'basic.consume'{queue=Q, no_ack=true},
+    #'basic.consume_ok'{consumer_tag=Tag} = amqp_channel:call(Ch, Sub),
+
+    %% Get messages.
+    io:format("Listening for messages (CTRL-C to stop)~n"),
+    loop(Ch, Tag).
+
+bind(_Ch, _Q, []) -> ok;
+bind(Ch, Q, [Binding|Rest]) -> 
+    QBind = #'queue.bind'{
+      queue=Q, exchange= <<"amq.topic">>,
+      routing_key=list_to_binary(Binding)},
+    #'queue.bind_ok'{} = amqp_channel:call(Ch, QBind),
+    bind(Ch, Q, Rest).
+
+loop(Ch, Tag) ->
+    receive
+        #'basic.consume_ok'{} ->
+            loop(Ch, Tag);
+        {#'basic.deliver'{consumer_tag=_Tag, routing_key=_Key}=D,
+         #amqp_msg{payload=_MsgIn}=M} ->
+            io:format("~p~n~p~n~n", [D, M]),
+            loop(Ch, Tag);
+        Other ->
+            io:format("ERROR: Got unexpected ~p from broker~n", [Other])
+    end.

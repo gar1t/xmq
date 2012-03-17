@@ -1,0 +1,46 @@
+#!/usr/bin/env escript
+%% -*- erlang -*-
+
+-include_lib("amqp_client/include/amqp_client.hrl").
+
+main(_) ->
+    %% Connect to broker.
+    {ok, C} = amqp_connection:start(#amqp_params_network{}),
+
+    %% Create an exclusive queue for receiving messages.
+    {ok, Ch} = amqp_connection:open_channel(C),
+    QDecl = #'queue.declare'{auto_delete=true, exclusive=true},
+    #'queue.declare_ok'{queue=Q} = amqp_channel:call(Ch, QDecl),
+    
+    %% Bind topics to our queue.
+    QBind = #'queue.bind'{
+      queue=Q, exchange= <<"amq.topic">>,
+      routing_key= <<"tests.#">>},
+    #'queue.bind_ok'{} = amqp_channel:call(Ch, QBind),
+
+    %% Subscribe to our queue.
+    Sub = #'basic.consume'{queue=Q, no_ack=true},
+    #'basic.consume_ok'{consumer_tag=Tag} = amqp_channel:call(Ch, Sub),
+
+    %% Send a message to the topic exchange.
+    Pub = #'basic.publish'{
+      exchange= <<"amq.topic">>, routing_key= <<"tests.msg">>},
+    MsgOut = <<"Testing 123">>,
+    io:format("Sending ~p to broker~n", [MsgOut]),
+    amqp_channel:cast(Ch, Pub, #amqp_msg{payload=MsgOut}),
+
+    %% Get the message from the queue.
+    loop(Ch, Tag).
+
+loop(Ch, Tag) ->
+    receive
+        #'basic.consume_ok'{} ->
+            loop(Ch, Tag);
+        {#'basic.deliver'{consumer_tag=Tag}, #amqp_msg{payload=MsgIn}} ->
+            io:format("Got ~p from broker~n", [MsgIn]);
+        Other ->
+            io:format("ERROR: Got unexpected ~p from broker~n", [Other])
+    after
+        1000 ->
+            io:format("ERROR: Timed out waiting for msg from broker~n")
+    end.

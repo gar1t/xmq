@@ -1,0 +1,35 @@
+xmq is an Erlang library that provides cross message system utilities.
+
+Features:
+
+- AMQP to 0MQ bridge
+
+* xmq_az_bridge
+
+The (a)MQP to (z)eroMQ bridge lets 0MQ clients participate in an AMQP routing
+scheme.
+
+It works like this:
+
+- Bridge connects to AMQP broker and binds a number of topics to a queue
+- Bridge provides a ROUTER 0MQ socket
+  - Clients routinely publish expirable routes
+  - Clients send messages destined to AMQP
+  - Clients receive messages routed by bridge from AMQP
+- Bridge routinely unbinds topics as routes expire
+
+* Utilities
+
+** Routing Tables
+
+The module xmq_routes provides these functions:
+
+| add_direct(Key, Dest, Expires) | Adds a direct route    |
+| get_direct(Key)                | Gets a direct consumer |
+| add_topic(Key, Dest, Expires)  | Adds a topic route     |
+| get_topic(Key)                 | Gets topic consumers   |
+
+Routes expire if they're not routinely updated. Clients are expected to update
+their routing information in regular periods to ensure they receive
+messages. If a client doesn't update its routes, the routes will eventually
+expire.
