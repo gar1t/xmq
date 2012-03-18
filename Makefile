@@ -6,7 +6,9 @@ compile: deps
 quick:
 	$(rebar) compile skip_deps=true
 
-deps: rabbitmq-deps
+deps: rebar-deps rabbitmq-deps
+
+rebar-deps:
 	$(rebar) get-deps
 
 refresh-deps: delete-deps deps
@@ -27,7 +29,9 @@ deps/rabbitmq-codegen:
 
 deps/rabbitmq-server:
 	cd deps; \
-	git clone git://github.com/rabbitmq/rabbitmq-server.git --depth 1
+	git clone git://github.com/rabbitmq/rabbitmq-server.git --depth 1; \
+	cd rabbitmq-server; \
+	sed -i s/python2.5/python2/ Makefile
 
 deps/rabbitmq-erlang-client:
 	cd deps; \

@@ -74,7 +74,7 @@ init([]) ->
     {ok, #state{tab=Tab}}.
 
 handle_msg({add_direct, Key, Dest, Expires}, _From, State) ->
-    {reply, add({{d, Key, Dest}, Expires}, State), State};
+    {reply, add(direct_object(Key, Dest, Expires), State), State};
 handle_msg({get_direct, Key}, _From, State) ->
     {reply, select({{d, Key, '$1'}, '_'}, ['$1'], State), State};
 handle_msg({delete_direct, Key, Dest}, _From, State) ->
@@ -117,46 +117,60 @@ delete(Select, Guard, #state{tab=Tab}) ->
 mdelete(Selects, State) ->
     lists:foreach(fun(Select) -> delete(Select, State) end, Selects).
 
+direct_object(Key, Dest, Expires) ->
+    {{d, Key, Dest}, {Expires, []}}.
+
 topic_objects(Bindings, Dest, Expires) ->
-    topic_objects(Bindings, Dest, Expires, []).
+    [topic_object(Binding, Dest, Expires) || Binding <- Bindings].
 
-topic_objects([], _Dest, _Expires, Acc) -> Acc;
-topic_objects([Binding|Rest], Dest, Expires, Acc) ->
-    topic_objects(
-      Rest, Dest, Expires,
-      topic_parts(split_binding(Binding), 1, Dest, Expires, Acc)).
+topic_object(Binding, Dest, Expires) ->
+    {BaseBinding, IsWildcard} = parse_binding(Binding),
+    {{t, BaseBinding, Dest}, {Expires, t_opts(IsWildcard)}}.
 
-split_binding(Binding) ->
-    binary:split(Binding, <<".">>, [global]).
+parse_binding(Binding) when size(Binding) > 2 ->
+    handle_split_binding(split_binary(Binding, size(Binding) - 2));
+parse_binding(Binding) -> {Binding, false}.
 
-topic_parts([], _Num, _Dest, _Expires, Acc) -> Acc;
-topic_parts([Part|Rest], Num, Dest, Expires, Acc) -> 
-    topic_parts(
-      Rest, Num + 1, Dest, Expires,
-      [topic_part(Part, Num, Dest, Expires)|Acc]).
+handle_split_binding({Base, <<".#">>}) -> {Base, true};
+handle_split_binding({P1, P2}) -> {<<P1/binary, P2/binary>>, false}.
 
-topic_part(Part, Num, Dest, Expires) ->
-    {{t, Num, Part, Dest}, Expires}.
+t_opts(true) -> ['#'];
+t_opts(false) -> [].
 
 select_topic(Key, State) ->
-    select_topic(split_binding(Key), 1, State, sets:new(), undefined).
+    select_topics({full_key, topic_key_parts(Key)}, State, []).
 
-select_topic([], _Num, _State, _AccWildcard, Result) ->
-    sets:to_list(Result);
-select_topic([Part|Rest], Num, State, AccWildcard0, Result0) ->
-    {Explicit, Wildcard} = select_topic_part(Num, Part, State),
-    AccWildcard = sets:subtract(sets:union(Wildcard, AccWildcard0), Explicit),
-    Result = select_topic_result(Explicit, AccWildcard, Result0),
-    select_topic(Rest, Num + 1, State, AccWildcard, Result).
+select_topics({_, []}, State, Acc) -> Acc;
+select_topics({KeyType, KeyParts}, State, Acc) ->
+    Key = join_key_parts(KeyParts),
+    handle_select_topics_result(
+      select({{t, Key, '$1'}, {'_', '$2'}}, ['$$'], State),
+      KeyType, KeyParts, State, Acc).
 
-select_topic_result(Explicit, Wildcard, undefined) ->
-    sets:union(Explicit, Wildcard);
-select_topic_result(Explicit, Wildcard, Result0) ->
-    sets:intersection(sets:union(Explicit, Wildcard), Result0).
+handle_select_topics_result(Result, KeyType, KeyParts, State, Acc) ->
+    select_topics(
+      {partial_key, pop_key_part(KeyParts)}, State,
+      add_topic_result(Result, KeyType, Acc)).
 
-select_topic_part(Num, Part, State) ->
-    {sets:from_list(select({{t, Num, Part, '$1'}, '_'}, ['$1'], State)),
-     sets:from_list(select({{t, Num, <<"#">>, '$1'}, '_'}, ['$1'], State))}.
+add_topic_result([], _KeyType, Acc) -> Acc;
+add_topic_result([[Dest, _]|Rest], full_key=KeyType, Acc) ->
+    add_topic_result(Rest, KeyType, [Dest|Acc]);
+add_topic_result([[Dest, ['#']]|Rest], partial_key=KeyType, Acc) ->
+    add_topic_result(Rest, KeyType, [Dest|Acc]);
+add_topic_result([_|Rest], partial_key=KeyType, Acc) ->
+    add_topic_result(Rest, KeyType, Acc).
+
+topic_key_parts(Key) ->
+    binary:split(Key, <<".">>, [global]).
+
+join_key_parts(Parts) ->
+    <<".", Key/binary>> = iolist_to_binary([[".", Part] || Part <- Parts]),
+    Key.
+
+pop_key_part([_]) -> [];
+pop_key_part(Parts) ->
+    [_|T] = lists:reverse(Parts),
+    lists:reverse(T).
 
 tab_to_list(#state{tab=Tab}) ->
     ets:tab2list(Tab).
