@@ -33,3 +33,36 @@ Routes expire if they're not routinely updated. Clients are expected to update
 their routing information in regular periods to ensure they receive
 messages. If a client doesn't update its routes, the routes will eventually
 expire.
+
+*** Topics Search
+
+Is a pain! To accommodate efficient lookup of patterns like "a.#.c" is a lot of
+effort for very little payoff.
+
+Here's a sketch of the problem.
+
+Consider a set of bindings B1 = B5:
+
+B1: a.#
+B2: a.b
+B3: a.b.#
+B4: a.c
+B5: a.#.c
+
+And a routing key:
+
+Msg:  a.b.c.d
+
+The key must be divided into its parts and evaluated against the bindings.
+
+| Part | Explicit       | Wildcard | Acc Wildcard  | Result         |
+| a    | B1 B2 B3 B4 B5 |          |               | B1 B2 B3 B4 B5 |
+| b    | B2 B3          | B1 B5    | B1 B5         | B1 B2 B3 B5    |
+| c    | B5             | B3       | B1 B3         | B1 B3 B5       |
+| d    |                |          | B1 B3         | B1 B3          |
+
+Rules:
+
+- Result when no Result0 = union(Explicit, AccWildcard)
+- Result = intersection(union(Explicit, AccWildcard), Result0)
+- AccWildcard = union(Wildcard, AccWildcard0) - Explicit

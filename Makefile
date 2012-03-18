@@ -50,5 +50,17 @@ delete-rabbitmq-deps:
 clean:
 	$(rebar) clean
 
+.PHONY: test
+
+tests := ""
+skip_app := $(shell echo $(DEPS) | tr ' ' ',')
+
+test:
+ifeq ($(tests), "")
+	$(rebar) -j1 eunit skip_deps=true skip_app=$(skip_app)
+else
+	$(rebar) -j1 eunit suite=$(tests) skip_deps=true skip_app=$(skip_app)
+endif
+
 shell:
 	erl -pa ebin $(wildcard deps/*/ebin) -s e2_reloader
