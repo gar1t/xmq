@@ -8,10 +8,11 @@
 
 -export([init/1, handle_msg/3, terminate/2]).
 
--record(state, {bindings, aconn, zcontext, zrouter, routes}).
+-record(state, {bindings, aconn, zcontext, zrouter, routes, binding_ttl}).
 
 -define(DEFAULT_AMQP_PARAMS, #amqp_params_network{}).
 -define(DEFAULT_ROUTER_ENDPOINT, "tcp://*:5555").
+-define(DEFAULT_BINDING_TTL, 60).
 
 -define(ZCONTEXT_TERM_TIMEOUT, 5000).
 
@@ -31,7 +32,13 @@ start_link(Bindings, Options) ->
 init([Bindings, Options]) ->
     start_amqp_connect(Options),
     {ZmqContext, ZmqRouter} = init_zmq_router(Options),
-    {ok, init_state(Bindings, ZmqContext, ZmqRouter)}.
+    Routes = new_routes(),
+    start_routes_expire_task(Routes),
+    {ok, #state{bindings=Bindings,
+                zcontext=ZmqContext,
+                zrouter=ZmqRouter,
+                routes=Routes,
+                binding_ttl=binding_ttl(Options)}}.
 
 handle_msg({amqp_connect, Connection}, _From, State) ->
     handle_amqp_connect(Connection, State);
@@ -40,10 +47,8 @@ handle_msg({#'basic.deliver'{routing_key=Key}, Msg}, _From, State) ->
 handle_msg({zmq, _Router, Client, [rcvmore]}, _From, State) ->
     handle_zmq_msg(Client, recv_zmq_parts([]), State);
 handle_msg({'EXIT', _Pid, normal}, _From, State) ->
-    %% Linked tasks used for connections
     {noreply, State};
 handle_msg({'basic.consume_ok', _CTag}, _From, State) ->
-    %% Ack for queue subscription
     {noreply, State};
 handle_msg(Msg, _From, State) ->
     e2_log:info({unhandled_az_bridge_msg, Msg}),
@@ -58,12 +63,6 @@ terminate(_Reason, State) ->
 %%% Internal init
 %%%===================================================================
 
-init_state(Bindings, ZmqContext, ZmqRouter) ->
-    #state{bindings=Bindings,
-           zcontext=ZmqContext,
-           zrouter=ZmqRouter,
-           routes=new_routes()}.
-
 init_zmq_router(Options) ->
     {ok, Context} = erlzmq:context(),
     {ok, Router} = erlzmq:socket(Context, [router, {active, true}]),
@@ -77,18 +76,23 @@ new_routes() ->
 start_amqp_connect(Options) ->
     xmq_amqp_connect:start_link(amqp_params(Options)).
 
+start_routes_expire_task(Routes) ->
+    xmq_routes_expire_task:start_link(Routes).
+
 amqp_params(Options) ->
     proplists:get_value(amqp_params, Options, ?DEFAULT_AMQP_PARAMS).
 
 router_endpoint(Options) ->
     proplists:get_value(router_endpoint, Options, ?DEFAULT_ROUTER_ENDPOINT).
 
+binding_ttl(Options) ->
+    proplists:get_value(binding_ttl, Options, ?DEFAULT_BINDING_TTL).
+
 %%%===================================================================
 %%% Internal AMQP setup
 %%%===================================================================
 
 handle_amqp_connect(Connection, #state{bindings=Bindings}=State) ->
-    e2_log:info(az_bridge_amqp_connected),
     setup_amqp_queue(Connection, Bindings),
     {noreply, State#state{aconn=Connection}}.
 
@@ -145,21 +149,21 @@ recv_zmq_parts(Acc) ->
         {zmq, _Router, Part, [rcvmore]} ->
             recv_zmq_parts([Part|Acc])
     after
-        %% TODO: This feels weird - but how to guard against hangs?
+        %% TODO: Defensive - but how to guard against hangs?
         1000 -> exit(zmq_recv_timeout)
     end.
 
 handle_zmq_msg(Client, [<<"bind">>|Bindings], State) ->
-    %% TODO: specify expires
     add_zmq_bindings(Client, Bindings, State),
     {noreply, State};
 handle_zmq_msg(_Client, Msg, State) ->
     e2_log:info({unhandled_az_bridge_zmq_msg, Msg}),
     {noreply, State}.
 
-add_zmq_bindings(Client, Bindings, #state{routes=Routes}) ->
+add_zmq_bindings(Client, Bindings, #state{routes=Routes, binding_ttl=TTL}) ->
     handle_add_topic_bindings_result(
-      catch(xmq_routes:add_topic_bindings(Routes, Bindings, Client)),
+      catch(xmq_routes:add_topic_bindings(
+              Routes, Bindings, Client, {ttl, TTL})),
       Bindings).
 
 handle_add_topic_bindings_result({'EXIT', {badarg, _}}, Bindings) ->
