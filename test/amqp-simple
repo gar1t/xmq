@@ -11,7 +11,7 @@ main(_) ->
     {ok, Ch} = amqp_connection:open_channel(C),
     QDecl = #'queue.declare'{auto_delete=true, exclusive=true},
     #'queue.declare_ok'{queue=Q} = amqp_channel:call(Ch, QDecl),
-    
+
     %% Bind topics to our queue.
     QBind = #'queue.bind'{
       queue=Q, exchange= <<"amq.topic">>,
@@ -30,7 +30,10 @@ main(_) ->
     amqp_channel:cast(Ch, Pub, #amqp_msg{payload=MsgOut}),
 
     %% Get the message from the queue.
-    loop(Ch, Tag).
+    loop(Ch, Tag),
+
+    % Cleanup.
+    amqp_connection:close(C).
 
 loop(Ch, Tag) ->
     receive

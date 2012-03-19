@@ -18,6 +18,25 @@ It works like this:
   - Clients receive messages routed by bridge from AMQP
 - Bridge routinely unbinds topics as routes expire
 
+** Example
+
+#+begin_src erlang
+  Bindings = [<<"test.#">>,
+              <<"production.#">>,
+              {<<"amq.direct">>, <<"queue-1234">>}],
+  Options = [{amq_host, "localhost"},
+             {amq_creds, {<<"guest">>, <<"guest">>}},
+             {router_endpoint, "tcp://*:5555"}],
+  xmq_az_bridge:start_link(Bindings, Options)
+#+end_src
+
+This bridge will connect to the local AMQP broker using the specified user name
+and password.
+
+It will bind a router socket to the local interface at port 5555. 0MQ clients
+can use this to routinely publish their bindings, send messages, and receive
+messages by way of the AMQP broker according to their bindings.
+
 * Utilities
 
 ** Routing Tables
@@ -66,3 +85,9 @@ Rules:
 - Result when no Result0 = union(Explicit, AccWildcard)
 - Result = intersection(union(Explicit, AccWildcard), Result0)
 - AccWildcard = union(Wildcard, AccWildcard0) - Explicit
+* To Do
+
+** Use expiration in xmq_routers:get_xxx functions
+
+Retrive the expiration and use it to remove expired bindings from return
+values.
