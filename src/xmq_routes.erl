@@ -76,9 +76,9 @@ init([]) ->
 handle_msg({add_direct, Key, Dest, Expires}, _From, State) ->
     {reply, add(direct_object(Key, Dest, Expires), State), State};
 handle_msg({get_direct, Key}, _From, State) ->
-    {reply, select({{d, Key, '$1'}, '_'}, ['$1'], State), State};
+    {reply, select_direct(Key, State), State};
 handle_msg({delete_direct, Key, Dest}, _From, State) ->
-    {reply, delete({{d, Key, Dest}, '_'}, State), State};
+    {reply, delete(direct_object(Key, Dest, '_'), State), State};
 handle_msg({add_topic_bindings, Bindings, Dest, Expires}, _From, State) ->
     {reply, madd(topic_objects(Bindings, Dest, Expires), State), State};
 handle_msg({get_topic, Key}, _From, State) ->
@@ -86,7 +86,7 @@ handle_msg({get_topic, Key}, _From, State) ->
 handle_msg({delete_topic_bindings, Bindings, Dest}, _From, State) ->
     {reply, mdelete(topic_objects(Bindings, Dest, '_'), State), State};
 handle_msg(delete_expired, _From, State) ->
-    {reply, delete({'_', '$1'}, [{'<', '$1', timestamp()}], State), State};
+    {reply, delete_expired(timestamp(), State), State};
 handle_msg(dump_routes, _From, State) ->
     {reply, tab_to_list(State), State}.
 
@@ -127,6 +127,9 @@ topic_object(Binding, Dest, Expires) ->
     {BaseBinding, IsWildcard} = parse_binding(Binding),
     {{t, BaseBinding, Dest}, {Expires, t_opts(IsWildcard)}}.
 
+delete_expired(Timestamp, State) ->
+    delete({'_', {'$1', '_'}}, [{'<', '$1', Timestamp}], State).
+
 parse_binding(Binding) when size(Binding) > 2 ->
     handle_split_binding(split_binary(Binding, size(Binding) - 2));
 parse_binding(Binding) -> {Binding, false}.
@@ -137,14 +140,27 @@ handle_split_binding({P1, P2}) -> {<<P1/binary, P2/binary>>, false}.
 t_opts(true) -> ['#'];
 t_opts(false) -> [].
 
-select_topic(Key, State) ->
-    select_topics({full_key, topic_key_parts(Key)}, State, []).
+active_bindings(L) ->
+    [Active || [Active, _Exp] <- active_binding_records(L)].
 
-select_topics({_, []}, State, Acc) -> Acc;
+active_binding_records(L) ->
+    Now = timestamp(),
+    lists:filter(fun([_, never]) -> true;
+                    ([_, Exp]) -> Exp >= Now
+                 end, L).
+
+select_direct(Key, State) ->
+    active_bindings(select({{d, Key, '$1'}, {'$2', '_'}}, ['$$'], State)).
+
+select_topic(Key, State) ->
+    active_bindings(
+      select_topics({full_key, topic_key_parts(Key)}, State, [])).
+
+select_topics({_, []}, _State, Acc) -> Acc;
 select_topics({KeyType, KeyParts}, State, Acc) ->
     Key = join_key_parts(KeyParts),
     handle_select_topics_result(
-      select({{t, Key, '$1'}, {'_', '$2'}}, ['$$'], State),
+      select({{t, Key, '$1'}, {'$2', '$3'}}, ['$$'], State),
       KeyType, KeyParts, State, Acc).
 
 handle_select_topics_result(Result, KeyType, KeyParts, State, Acc) ->
@@ -153,10 +169,10 @@ handle_select_topics_result(Result, KeyType, KeyParts, State, Acc) ->
       add_topic_result(Result, KeyType, Acc)).
 
 add_topic_result([], _KeyType, Acc) -> Acc;
-add_topic_result([[Dest, _]|Rest], full_key=KeyType, Acc) ->
-    add_topic_result(Rest, KeyType, [Dest|Acc]);
-add_topic_result([[Dest, ['#']]|Rest], partial_key=KeyType, Acc) ->
-    add_topic_result(Rest, KeyType, [Dest|Acc]);
+add_topic_result([[Binding, Expires, _]|Rest], full_key=KeyType, Acc) ->
+    add_topic_result(Rest, KeyType, [[Binding, Expires]|Acc]);
+add_topic_result([[Binding, Expires, ['#']]|Rest], partial_key=KeyType, Acc) ->
+    add_topic_result(Rest, KeyType, [[Binding, Expires]|Acc]);
 add_topic_result([_|Rest], partial_key=KeyType, Acc) ->
     add_topic_result(Rest, KeyType, Acc).
 
