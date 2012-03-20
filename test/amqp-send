@@ -15,7 +15,7 @@ main([Key, Msg]) ->
     {ok, Ch} = amqp_connection:open_channel(C),
     Pub = #'basic.publish'{
       exchange= <<"amq.topic">>, routing_key=list_to_binary(Key)},
-    amqp_channel:cast(Ch, Pub, #amqp_msg{payload=list_to_binary(Msg)}),
+    ok = amqp_channel:cast(Ch, Pub, #amqp_msg{payload=list_to_binary(Msg)}),
 
     % Cleanup.
     amqp_channel:close(Ch),

@@ -87,7 +87,34 @@ Rules:
 - AccWildcard = union(Wildcard, AccWildcard0) - Explicit
 * To Do
 
-** Use expiration in xmq_routers:get_xxx functions
+** Complete xmq_zmq_client
 
-Retrive the expiration and use it to remove expired bindings from return
-values.
+*** Direct bindings
+
+Support sending diretly to the client. Will be used in collecting replies.
+
+*** RPC facility
+
+Send a message with the expectation that we'll receive one or more replies or a
+time-to-live.
+
+Something like this:
+
+#+begin_src erlang
+  xmq_az_client:call(C, <<"amq.topic">>, <<"test.echo">>, <<"hello">>,
+                     [{timeout, 5000}])
+#+end_src
+
+Would send to the topic exchange with key "test.echo" and wait 5 seconds for
+responses.
+
+If the expectation is that one response will be provided:
+
+#+begin_src erlang
+  xmq_az_client:call(C, <<"amq.topic">>, <<"test.echo">>, <<"hello">>,
+                     [{replies, 1}, {timeout, 5000})
+#+end_src
+
+The default "wait for" options would be:
+
+  [{replies, infinity}, {timeout, 5000}]

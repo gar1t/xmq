@@ -15,5 +15,4 @@ start_link(Routes) ->
 
 handle_task(Routes) ->
     xmq_routes:delete_expired(Routes),
-e2_log:info({routes, xmq_routes:dump_routes(Routes)}),
     {repeat, Routes}.

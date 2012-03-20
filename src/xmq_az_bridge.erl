@@ -4,11 +4,12 @@
 
 -behavior(e2_service).
 
--export([start_link/2]).
+-export([start_link/1, start_link/2, get_routes/1]).
 
 -export([init/1, handle_msg/3, terminate/2]).
 
--record(state, {bindings, aconn, zcontext, zrouter, routes, binding_ttl}).
+-record(state, {bindings, aconn, achan, zcontext, zrouter, routes,
+                binding_ttl}).
 
 -define(DEFAULT_AMQP_PARAMS, #amqp_params_network{}).
 -define(DEFAULT_ROUTER_ENDPOINT, "tcp://*:5555").
@@ -20,10 +21,16 @@
 %%% API
 %%%===================================================================
 
+start_link(Options) ->
+    start_link([<<"#">>], Options).
+
 start_link(Bindings, Options) ->
     {ServiceOpts, BridgeOpts} =
         e2_service_impl:split_options(?MODULE, Options),
     e2_service:start_link(?MODULE, [Bindings, BridgeOpts], ServiceOpts).
+
+get_routes(Bridge) ->
+    e2_service:call(Bridge, get_routes).
 
 %%%===================================================================
 %%% Service callbacks
@@ -40,12 +47,14 @@ init([Bindings, Options]) ->
                 routes=Routes,
                 binding_ttl=binding_ttl(Options)}}.
 
+handle_msg(get_routes, _From, #state{routes=Routes}=State) ->
+    {reply, xmq_routes:dump_routes(Routes), State};
 handle_msg({amqp_connect, Connection}, _From, State) ->
     handle_amqp_connect(Connection, State);
 handle_msg({#'basic.deliver'{routing_key=Key}, Msg}, _From, State) ->
-    handle_amqp_msg(Key, Msg, State);
-handle_msg({zmq, _Router, Client, [rcvmore]}, _From, State) ->
-    handle_zmq_msg(Client, recv_zmq_parts([]), State);
+    handle_amqp_to_zmq(Key, Msg, State);
+handle_msg({zmq, Router, Client, [rcvmore]}, _From, State) ->
+    handle_zmq_msg(Client, erlzmq_util:recv_parts(Router), State);
 handle_msg({'EXIT', _Pid, normal}, _From, State) ->
     {noreply, State};
 handle_msg({'basic.consume_ok', _CTag}, _From, State) ->
@@ -93,13 +102,14 @@ binding_ttl(Options) ->
 %%%===================================================================
 
 handle_amqp_connect(Connection, #state{bindings=Bindings}=State) ->
-    setup_amqp_queue(Connection, Bindings),
-    {noreply, State#state{aconn=Connection}}.
+    {Channel, _Queue} = setup_amqp_queue(Connection, Bindings),
+    {noreply, State#state{aconn=Connection, achan=Channel}}.
 
 setup_amqp_queue(Connection, Bindings) ->
     {Channel, Queue} = create_amqp_queue(Connection),
     subscribe_amqp_queue(Channel, Queue),
-    add_amqp_bindings(Bindings, Channel, Queue).
+    add_amqp_bindings(Bindings, Channel, Queue),
+    {Channel, Queue}.
 
 create_amqp_queue(Connection) ->
     {ok, Channel} = amqp_connection:open_channel(Connection),
@@ -120,55 +130,70 @@ add_amqp_bindings([Binding|Rest], Channel, Queue) ->
     add_amqp_bindings([{<<"amq.topic">>, Binding}|Rest], Channel, Queue).
 
 %%%===================================================================
-%%% Internal AMQP message handling
+%%% Internal: AMQP -> ZMQ message
 %%%===================================================================
 
-handle_amqp_msg(Key, Msg, #state{routes=Routes}=State) ->
-    maybe_send_msg(xmq_routes:get_topic(Routes, Key), Key, Msg, State),
+handle_amqp_to_zmq(Key, Msg, #state{routes=Routes}=State) ->
+    maybe_send_zmq(xmq_routes:get_topic(Routes, Key), Key, Msg, State),
     {noreply, State}.
 
-maybe_send_msg([], _Key, _Msg, _State) -> ok;
-maybe_send_msg(Clients, Key, Msg, #state{zrouter=Router}) ->
-    send_msg(Router, Clients, Key, term_to_binary(Msg)).
+maybe_send_zmq([], _Key, _Msg, _State) -> ok;
+maybe_send_zmq(Clients, Key, Msg, #state{zrouter=Router}) ->
+    send_zmq(Router, Clients, Key, term_to_binary(Msg)).
 
-send_msg(_Router, [], _Key, _MsgBin) -> ok;
-send_msg(Router, [Client|Rest], Key, MsgBin) ->
+send_zmq(_Router, [], _Key, _MsgBin) -> ok;
+send_zmq(Router, [Client|Rest], Key, MsgBin) ->
     erlzmq:send(Router, Client, [sndmore]),
+    erlzmq:send(Router, <<"amqp_msg">>, [sndmore]),
     erlzmq:send(Router, Key, [sndmore]),
     erlzmq:send(Router, MsgBin),
-    send_msg(Router, Rest, Key, MsgBin).
+    send_zmq(Router, Rest, Key, MsgBin).
 
 %%%===================================================================
-%%% Internal ZMQ message handling
+%%% Internal: ZMQ -> AMQP message or binding setup
 %%%===================================================================
-
-recv_zmq_parts(Acc) ->
-    receive
-        {zmq, _Router, Part, []} ->
-            lists:reverse([Part|Acc]);
-        {zmq, _Router, Part, [rcvmore]} ->
-            recv_zmq_parts([Part|Acc])
-    after
-        %% TODO: Defensive - but how to guard against hangs?
-        1000 -> exit(zmq_recv_timeout)
-    end.
 
 handle_zmq_msg(Client, [<<"bind">>|Bindings], State) ->
     add_zmq_bindings(Client, Bindings, State),
     {noreply, State};
+handle_zmq_msg(Client, [<<"unbind">>|Bindings], State) ->
+    delete_zmq_bindings(Client, Bindings, State),
+    {noreply, State};
+handle_zmq_msg(_Client, [<<"send">>, Exchange, Key, MsgBin], State) ->
+    handle_zmq_to_amqp(Exchange, Key, decode_amqp_msg(MsgBin), State);
 handle_zmq_msg(_Client, Msg, State) ->
     e2_log:info({unhandled_az_bridge_zmq_msg, Msg}),
     {noreply, State}.
 
+handle_zmq_to_amqp(Exchange, Key, {ok, #amqp_msg{}=Msg}, State) ->
+    send_amqp(Exchange, Key, Msg, State),
+    {noreply, State};
+handle_zmq_to_amqp(_Exchange, _Key, {error, Err}, State) ->
+    e2_log:error({bad_amqp_msg, Err}),
+    {noreply, State}.
+
+send_amqp(Exchange, Key, Msg, #state{achan=Channel}) ->
+    Pub = #'basic.publish'{exchange=Exchange, routing_key=Key},
+    ok = amqp_channel:cast(Channel, Pub, Msg).
+
 add_zmq_bindings(Client, Bindings, #state{routes=Routes, binding_ttl=TTL}) ->
     handle_add_topic_bindings_result(
-      catch(xmq_routes:add_topic_bindings(
-              Routes, Bindings, Client, {ttl, TTL})),
+      catch(
+        xmq_routes:add_topic_bindings(Routes, Bindings, Client, {ttl, TTL})),
       Bindings).
 
 handle_add_topic_bindings_result({'EXIT', {badarg, _}}, Bindings) ->
     e2_log:error({az_bridge_illegal_bindings, Bindings});
 handle_add_topic_bindings_result(ok, _Bindings) -> ok.
+
+delete_zmq_bindings(Client, Bindings, #state{routes=Routes}) ->
+    catch(xmq_routes:delete_topic_bindings(Routes, Bindings, Client)).
+
+decode_amqp_msg(Bin) ->
+    handle_decode_amqp_msg_result(catch(binary_to_term(Bin))).
+
+handle_decode_amqp_msg_result(#amqp_msg{}=Msg) -> {ok, Msg};
+handle_decode_amqp_msg_result({'EXIT', Err}) -> {error, Err}.
 
 %%%===================================================================
 %%% Internal term / cleanup
