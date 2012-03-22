@@ -18,14 +18,36 @@ It works like this:
   - Clients receive messages routed by bridge from AMQP
 - Bridge routinely unbinds topics as routes expire
 
-** Example
+** Client Operations
+
+The bridge will support these client operations:
+
+| bind | Specify client bindings |
+| send | Send an AMQP message    |
+
+The bind message will be a ZMQ multi-part message:
+
+  [<<"bind">>, DirectBinding | TopicBindings]
+
+For example:
+
+  [<<"bind">>, <<"my-direct-queue">>, <<"test.#">>]
+
+The send message:
+
+  [<<"send">>, Exchange, Key, binary(#amqp_msg{})]
+
+NOTE: The message here is an binary encoded amqp_msg Erlang record. This
+ties clients to Erlang for the time being. If we need to support other clients,
+we'd need to support an independent encoding scheme such as JSON, msgpack, etc.
+
+** Bridge Setup Example
 
 #+begin_src erlang
-  Bindings = [<<"test.#">>,
-              <<"production.#">>,
-              {<<"amq.direct">>, <<"queue-1234">>}],
-  Options = [{amq_host, "localhost"},
-             {amq_creds, {<<"guest">>, <<"guest">>}},
+  Options = [{direct_binding, {<<"amq.direct">>, <<"my-queue">>}},
+             {topic_bindings, {<<"amq.topic">>, [<<"test.#">>]}},
+             {amqp_host, "localhost"},
+             {amqp_creds, {<<"guest">>, <<"guest">>}},
              {router_endpoint, "tcp://*:5555"}],
   xmq_az_bridge:start_link(Bindings, Options)
 #+end_src
@@ -92,6 +114,8 @@ Rules:
 *** Direct bindings
 
 Support sending diretly to the client. Will be used in collecting replies.
+
+Is this something we need to specify?
 
 *** RPC facility
 

@@ -4,17 +4,17 @@
 -include_lib("amqp_client/include/amqp_client.hrl").
 
 usage() ->
-    io:format("usage: amqp-listen <key> <msg>~n"),
+    io:format("usage: amqp-listen <exchange> <key> <msg>~n"),
     erlang:halt(1).
 
-main([Key, Msg]) ->
+main([Exchange, Key, Msg]) ->
     %% Connect to broker.
     {ok, C} = amqp_connection:start(#amqp_params_network{}),
 
     %% Send message to topic exchange.
     {ok, Ch} = amqp_connection:open_channel(C),
-    Pub = #'basic.publish'{
-      exchange= <<"amq.topic">>, routing_key=list_to_binary(Key)},
+    Pub = #'basic.publish'{exchange=list_to_binary(Exchange),
+                           routing_key=list_to_binary(Key)},
     ok = amqp_channel:cast(Ch, Pub, #amqp_msg{payload=list_to_binary(Msg)}),
 
     % Cleanup.
