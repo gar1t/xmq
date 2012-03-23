@@ -173,7 +173,7 @@ amqp_subscribe(Queue, #state{achan=Channel}) ->
     #'basic.consume_ok'{} = amqp_channel:call(Channel, Sub).
 
 amqp_bind(Queue, Exchange, Binding, #state{achan=Channel}) ->
-io:format("##### amqp_bind: ~p~n", [{Queue, Exchange, Binding}]),
+    e2_log:info({amqp_bind, Queue, Exchange, Binding}),
     QBind = #'queue.bind'{queue=Queue, exchange=Exchange, routing_key=Binding},
     #'queue.bind_ok'{} = amqp_channel:call(Channel, QBind).
 
