@@ -67,4 +67,4 @@ else
 endif
 
 shell:
-	erl -pa ebin $(wildcard deps/*/ebin) -s e2_reloader
+	erl -smp -pa ebin $(wildcard deps/*/ebin) -s e2_reloader
