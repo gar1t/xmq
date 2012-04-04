@@ -3,3 +3,4 @@
 .eunit
 deps
 erl_crash.dump
+priv/*.config

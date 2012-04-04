@@ -66,5 +66,7 @@ else
 	$(rebar) -j1 eunit suite=$(tests) skip_deps=true skip_app=$(skip_app)
 endif
 
+config := dev
+
 shell:
-	erl -smp -pa ebin $(wildcard deps/*/ebin) -s e2_reloader
+	erl -smp -pa ebin $(wildcard deps/*/ebin) -config priv/$(config) -s e2_reloader -s xmq

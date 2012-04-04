@@ -1,0 +1,11 @@
+%%% -*-erlang-*-
+[{xmq,
+  [{az_bridges,
+    %% Default values below - can be omitted if unchanged.
+    [[{router_endpoint, "tcp://*:5555"},
+      {amqp_host, "localhost"},
+      {amqp_creds, {<<"guest">>, <<"guest">>}},
+      {direct_binding, {<<"amq.direct">>, <<"">>}},
+      {topic_bindings, {<<"amq.topic">>, [<<"#">>]}},
+      {binding_ttl, 60}]]
+   }]}].
