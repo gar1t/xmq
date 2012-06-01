@@ -58,13 +58,12 @@ clean:
 .PHONY: test
 
 tests := ""
-skip_app := $(shell echo $(DEPS) | tr ' ' ',')
 
 test:
 ifeq ($(tests), "")
-	$(rebar) -j1 eunit skip_deps=true skip_app=$(skip_app)
+	$(rebar) -j1 eunit skip_deps=true
 else
-	$(rebar) -j1 eunit suite=$(tests) skip_deps=true skip_app=$(skip_app)
+	$(rebar) -j1 eunit suite=$(tests) skip_deps=true
 endif
 
 config := dev
