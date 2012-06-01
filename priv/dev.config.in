@@ -7,5 +7,6 @@
       {amqp_creds, {<<"guest">>, <<"guest">>}},
       {direct_binding, {<<"amq.direct">>, <<"">>}},
       {topic_bindings, {<<"amq.topic">>, [<<"#">>]}},
-      {binding_ttl, 60}]]
+      {binding_ttl, 60},
+      {secret, <<0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0>>}]]
    }]}].
