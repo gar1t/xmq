@@ -17,7 +17,8 @@
                 zrouter,
                 routes,
                 binding_ttl,
-                cleanup}).
+                cleanup,
+                secret}).
 
 -define(DEFAULT_AMQP_HOST, "localhost").
 -define(DEFAULT_AMQP_CREDS, {<<"guest">>, <<"guest">>}).
@@ -25,25 +26,19 @@
 -define(DEFAULT_DIRECT_BINDING, {<<"amq.direct">>, <<"">>}).
 -define(DEFAULT_TOPIC_BINDINGS, {<<"amq.topic">>, [<<"#">>]}).
 -define(DEFAULT_BINDING_TTL, 60).
+-define(DEFAULT_SECRET, <<0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0>>).
 
 -define(ZCONTEXT_TERM_TIMEOUT, 5000).
 -define(CLEANUP_INTERVAL, 60000).
 
 %%%===================================================================
-%%% API
+%%% Start / init
 %%%===================================================================
 
 start_link(Options) ->
     {ServiceOpts, BridgeOpts} =
         e2_service_impl:split_options(?MODULE, Options),
     e2_service:start_link(?MODULE, [BridgeOpts], ServiceOpts).
-
-dump_info(Bridge) ->
-    e2_service:call(Bridge, dump_info).
-
-%%%===================================================================
-%%% Service callbacks
-%%%===================================================================
 
 init([Options]) ->
     start_amqp_connect(Options),
@@ -56,7 +51,59 @@ init([Options]) ->
                 zrouter=ZmqRouter,
                 routes=Routes,
                 binding_ttl=binding_ttl(Options),
-                cleanup=start_cleanup()}}.
+                cleanup=start_cleanup(),
+		secret=secret(Options)}}.
+
+start_amqp_connect(Options) ->
+    xmq_amqp_connect:start_link(amqp_params(Options)).
+
+amqp_params(Options) ->
+    Host = proplists:get_value(amqp_host, Options, ?DEFAULT_AMQP_HOST),
+    {User, Pwd} =
+        proplists:get_value(amqp_creds, Options, ?DEFAULT_AMQP_CREDS),
+    #amqp_params_network{host=Host, username=User, password=Pwd}.
+
+init_zmq_router(Options) ->
+    {ok, Context} = erlzmq:context(),
+    {ok, Router} = erlzmq:socket(Context, [router, {active, true}]),
+    ok = erlzmq:bind(Router, router_endpoint(Options)),
+    {Context, Router}.
+
+router_endpoint(Options) ->
+    proplists:get_value(router_endpoint, Options, ?DEFAULT_ROUTER_ENDPOINT).
+
+new_routes() ->
+    {ok, Routes} = xmq_routes:start_link(),
+    Routes.
+
+direct_binding(Options) ->
+    proplists:get_value(direct_binding, Options, ?DEFAULT_DIRECT_BINDING).
+
+topic_bindings(Options) ->
+    proplists:get_value(topic_bindings, Options, ?DEFAULT_TOPIC_BINDINGS).
+
+binding_ttl(Options) ->
+    proplists:get_value(binding_ttl, Options, ?DEFAULT_BINDING_TTL).
+
+start_cleanup() ->
+    e2_task_impl:start_repeat(?CLEANUP_INTERVAL, '$cleanup').
+
+secret(Options) ->
+    validate_secret(proplists:get_value(secret, Options, ?DEFAULT_SECRET)).
+
+validate_secret(Bin) when is_binary(Bin), size(Bin) == 16 -> Bin;
+validate_secret(_) -> exit(bad_secret).
+
+%%%===================================================================
+%%% API
+%%%===================================================================
+
+dump_info(Bridge) ->
+    e2_service:call(Bridge, dump_info).
+
+%%%===================================================================
+%%% Service dispatch
+%%%===================================================================
 
 handle_msg(dump_info, _From, State) ->
     {reply, info(State), State};
@@ -79,51 +126,8 @@ handle_msg(Msg, _From, State) ->
     e2_log:info({unhandled_az_bridge_msg, Msg}),
     {noreply, State}.
 
-terminate(_Reason, State) ->
-    close_zmq_router(State),
-    term_zmq_context(State),
-    close_amqp_connection(State).
-
 %%%===================================================================
-%%% Internal: init
-%%%===================================================================
-
-init_zmq_router(Options) ->
-    {ok, Context} = erlzmq:context(),
-    {ok, Router} = erlzmq:socket(Context, [router, {active, true}]),
-    ok = erlzmq:bind(Router, router_endpoint(Options)),
-    {Context, Router}.
-
-new_routes() ->
-    {ok, Routes} = xmq_routes:start_link(),
-    Routes.
-
-start_amqp_connect(Options) ->
-    xmq_amqp_connect:start_link(amqp_params(Options)).
-
-start_cleanup() ->
-    e2_task_impl:start_repeat(?CLEANUP_INTERVAL, '$cleanup').
-
-amqp_params(Options) ->
-    Host = proplists:get_value(amqp_host, Options, ?DEFAULT_AMQP_HOST),
-    {User, Pwd} =
-        proplists:get_value(amqp_creds, Options, ?DEFAULT_AMQP_CREDS),
-    #amqp_params_network{host=Host, username=User, password=Pwd}.
-
-direct_binding(Options) ->
-    proplists:get_value(direct_binding, Options, ?DEFAULT_DIRECT_BINDING).
-
-topic_bindings(Options) ->
-    proplists:get_value(topic_bindings, Options, ?DEFAULT_TOPIC_BINDINGS).
-
-router_endpoint(Options) ->
-    proplists:get_value(router_endpoint, Options, ?DEFAULT_ROUTER_ENDPOINT).
-
-binding_ttl(Options) ->
-    proplists:get_value(binding_ttl, Options, ?DEFAULT_BINDING_TTL).
-
-%%%===================================================================
-%%% Internal: debugging / info
+%%% Debugging / info
 %%%===================================================================
 
 info(#state{direct_binding={DirectExch, BridgeQueue},
@@ -138,7 +142,7 @@ info(#state{direct_binding={DirectExch, BridgeQueue},
      {direct_queues, sets:to_list(Queues)}].
 
 %%%===================================================================
-%%% Internal: AMQP setup
+%%% AMQP setup
 %%%===================================================================
 
 handle_amqp_connect(Connection, State0) ->
@@ -178,7 +182,7 @@ amqp_bind(Queue, Exchange, Binding, #state{achan=Channel}) ->
     #'queue.bind_ok'{} = amqp_channel:call(Channel, QBind).
 
 %%%===================================================================
-%%% Internal: AMQP -> ZMQ message
+%%% AMQP -> ZMQ message
 %%%===================================================================
 
 handle_amqp_to_zmq(Exch, Key, Msg, #state{direct_binding={Exch, _}}=State) ->
@@ -195,28 +199,93 @@ topic_routes(Key, #state{routes=Routes}) ->
     xmq_routes:get_topic(Routes, Key).
 
 maybe_send_zmq([], _Key, _Msg, _State) -> ok;
-maybe_send_zmq(Clients, Key, Msg, #state{zrouter=Router}) ->
-    send_zmq(Router, Clients, Key, term_to_binary(Msg)).
+maybe_send_zmq(Clients, Key, Msg, #state{zrouter=Router, secret=Secret}) ->
+    send_zmq(Router, Clients, Key, term_to_binary(Msg), Secret).
 
-send_zmq(_Router, [], _Key, _MsgBin) -> ok;
-send_zmq(Router, [Client|Rest], Key, MsgBin) ->
-    erlzmq:send(Router, Client, [sndmore]),
-    erlzmq:send(Router, <<"amqp_msg">>, [sndmore]),
-    erlzmq:send(Router, Key, [sndmore]),
-    erlzmq:send(Router, MsgBin),
-    send_zmq(Router, Rest, Key, MsgBin).
+send_zmq(_Router, [], _Key, _MsgBin, _Secret) -> ok;
+send_zmq(Router, [Client|Rest], Key, MsgBin, Secret) ->
+    Parts = [<<"amqp_msg">>, Key, MsgBin],
+    send_parts(Router, Client, Parts, Secret),
+    send_zmq(Router, Rest, Key, MsgBin, Secret).
+
+send_parts(Router, Client, Parts, Secret) ->
+    Encrypted = encrypt_parts([Secret|Parts], Secret),
+    send_parts(Router, [Client, <<"aes-cbc-128">>|Encrypted]).
+
+encrypt_parts(Parts, Secret) ->
+    [xmq_crypto:aes_cbc_128_encrypt(xmq_crypto:pad(Part, 16), Secret)
+     || Part <- Parts].
+
+send_parts(Socket, [Last]) ->
+    ok = erlzmq:send(Socket, Last);
+send_parts(Socket, [Part|More]) ->
+    ok = erlzmq:send(Socket, Part, [sndmore]),
+    send_parts(Socket, More).
 
 %%%===================================================================
-%%% Internal: ZMQ -> AMQP message / binding setup
+%%% ZMQ -> AMQP message / binding setup
 %%%===================================================================
 
-handle_zmq_msg(Client, [<<"bind">>, Direct|Topics], State) ->
+handle_zmq_msg(Client, [<<"aes-cbc-128">>, EncKey|Msg], State) ->
+    handle_encrypted_zmq_msg({EncKey, Msg}, Client, State);
+handle_zmq_msg(_Client, _Msg, State) ->
+    e2_log:error(invalid_zmq_msg_header),
+    {noreply, State}.
+
+handle_encrypted_zmq_msg({EncKey, EncParts}, Client, State) ->
+    handle_decrypt_zmq_key(
+      decrypt_zmq_key(EncKey, State), EncParts, Client, State).
+
+decrypt_zmq_key(EncKey, #state{secret=Key}) ->
+    case decrypt(EncKey, Key) of
+	{ok, Key} -> match;
+	{ok, _Mismatch} -> nomatch;
+	error -> nomatch
+    end.
+
+decrypt(Data, Key) ->
+    try xmq_crypto:aes_cbc_128_decrypt(Data, Key) of
+	Padded ->
+	    try xmq_crypto:unpad(Padded) of
+		Val -> {ok, Val}
+	    catch
+		error:invalid_padding -> error
+	    end
+    catch
+	error:badarg -> error
+    end.
+
+handle_decrypt_zmq_key(match, EncParts, Client, State) ->
+    decrypt_zmq_parts(EncParts, [], Client, State);
+handle_decrypt_zmq_key(nomatch, _EncParts, _Client, State) ->
+    e2_log:error(zmq_msg_key_mismatch),
+    {noreply, State}.
+
+decrypt_zmq_parts([], DecrAcc, Client, State) ->
+    handle_decrypted_zmq_msg(Client, lists:reverse(DecrAcc), State);
+decrypt_zmq_parts([EncPart|Rest], DecrAcc, Client, State) ->
+    handle_decrypt_zmq_part(
+      decrypt_zmq_part(EncPart, State), Rest, DecrAcc, Client, State).
+
+decrypt_zmq_part(EncrPart, #state{secret=Key}) ->
+    case decrypt(EncrPart, Key) of
+	{ok, Val} -> {ok, Val};
+	error -> error
+    end.
+
+handle_decrypt_zmq_part({ok, DecrPart}, Rest, DecrAcc, Client, State) ->
+    decrypt_zmq_parts(Rest, [DecrPart|DecrAcc], Client, State);
+handle_decrypt_zmq_part(error, _Rest, _DecrAcc, _Client, State) ->
+    e2_log:error(zmq_msg_decrypt_error),
+    {noreply, State}.
+
+handle_decrypted_zmq_msg(Client, [<<"bind">>, Direct|Topics], State) ->
     {noreply, add_zmq_bindings(Client, Direct, Topics, State)};
-handle_zmq_msg(Client, [<<"unbind">>, Direct|Topics], State) ->
+handle_decrypted_zmq_msg(Client, [<<"unbind">>, Direct|Topics], State) ->
     {noreply, delete_zmq_bindings(Client, Direct, Topics, State)};
-handle_zmq_msg(_Client, [<<"send">>, Exchange, Key, MsgBin], State) ->
+handle_decrypted_zmq_msg(_, [<<"send">>, Exchange, Key, MsgBin], State) ->
     handle_zmq_to_amqp(Exchange, Key, decode_amqp_msg(MsgBin), State);
-handle_zmq_msg(_Client, Msg, State) ->
+handle_decrypted_zmq_msg(_, Msg, State) ->
     e2_log:info({unhandled_az_bridge_zmq_msg, Msg}),
     {noreply, State}.
 
@@ -279,7 +348,7 @@ handle_decode_amqp_msg_result(#amqp_msg{}=Msg) -> {ok, Msg};
 handle_decode_amqp_msg_result({'EXIT', Err}) -> {error, Err}.
 
 %%%===================================================================
-%%% Internal: state cleanup
+%%% State cleanup
 %%%===================================================================
 
 handle_cleanup(State) ->
@@ -318,17 +387,22 @@ next_cleanup(#state{cleanup=Cleanup}=State) ->
     State#state{cleanup=e2_task_impl:next_repeat(Cleanup)}.
 
 %%%===================================================================
-%%% Internal: term / cleanup
+%%% Terminate
 %%%===================================================================
 
-term_zmq_context(#state{zcontext=C}) ->
-    e2_log:info(az_bridge_zmq_context_term),
-    ok = erlzmq:term(C, ?ZCONTEXT_TERM_TIMEOUT).
+terminate(_Reason, State) ->
+    close_zmq_router(State),
+    term_zmq_context(State),
+    close_amqp_connection(State).
 
 close_zmq_router(#state{zrouter=undefined}) -> ok;
 close_zmq_router(#state{zrouter=Router}) ->
     e2_log:info(az_bridge_zmq_router_close),
     ok = erlzmq:close(Router).
+
+term_zmq_context(#state{zcontext=C}) ->
+    e2_log:info(az_bridge_zmq_context_term),
+    ok = erlzmq:term(C, ?ZCONTEXT_TERM_TIMEOUT).
 
 close_amqp_connection(#state{aconn=undefined}) -> ok;
 close_amqp_connection(#state{aconn=C}) ->

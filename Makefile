@@ -29,14 +29,15 @@ deps/rabbitmq-codegen:
 
 deps/rabbitmq-server:
 	cd deps; \
-	git clone git://github.com/rabbitmq/rabbitmq-server.git --depth 1; \
+	git clone git://github.com/rabbitmq/rabbitmq-server.git \
+            --branch rabbitmq_v2_7_1 --depth 1; \
 	cd rabbitmq-server; \
 	sed -i s/python2.5/python2/ Makefile
 
 deps/rabbitmq-erlang-client:
 	cd deps; \
 	git clone git://github.com/rabbitmq/rabbitmq-erlang-client.git \
-	   --depth 1; \
+	   --branch rabbitmq_v2_7_1 --depth 1; \
 	cd rabbitmq-erlang-client; \
 	make
 
